@@ -1,65 +1,276 @@
-import Image from "next/image";
+'use client';
+
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
+import { createInitialGameState } from '@/lib/gameLogic';
+
+// ランダムなルームIDの生成（数字5桁）
+const generateRoomId = () => {
+  const chars = '0123456789';
+  let result = '';
+  for (let i = 0; i < 5; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
 
 export default function Home() {
+  const router = useRouter();
+  const [activeTab, setActiveTab] = useState<'join' | 'create'>('join');
+  
+  // 入力フォームの状態
+  const [roomId, setRoomId] = useState('');
+  const [playerName, setPlayerName] = useState('');
+  
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // ルームへの参加処理
+  const handleJoinRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roomId || !playerName) {
+      setError('ルームIDとお名前を入力してください。');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    const upperRoomId = roomId.trim().toUpperCase();
+
+    try {
+      // ルームの存在確認
+      const { data, error: fetchError } = await supabase
+        .from('rooms')
+        .select('id')
+        .eq('id', upperRoomId)
+        .single();
+
+      if (fetchError || !data) {
+        setError('指定されたルームIDが見つかりません。');
+        setLoading(false);
+        return;
+      }
+
+      // ローカルストレージにお名前を保存
+      localStorage.setItem('my_player_name', playerName.trim());
+
+      // ルームページへ遷移
+      router.push(`/room/${upperRoomId}`);
+    } catch (err) {
+      console.error(err);
+      setError('ルームの検索中にエラーが発生しました。');
+      setLoading(false);
+    }
+  };
+
+  // ルームの作成処理
+  const handleCreateRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!playerName) {
+      setError('お名前を入力してください。');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const newRoomId = generateRoomId();
+      
+      // パスワードなしなので、password_hashは空の文字列を入れる
+      // デフォルト設定：勝利スコア10点、最大問題数40問、初期スロット数5枠
+      const initialState = createInitialGameState({
+        winningScore: 200,
+        maxQuestions: 40,
+        slotCount: 5,
+      });
+      initialState.moderatorName = playerName.trim();
+
+      const { error: insertError } = await supabase.from('rooms').insert({
+        id: newRoomId,
+        password_hash: '', // 空文字でインサート
+        state: initialState,
+      });
+
+      if (insertError) {
+        console.error(insertError);
+        setError('ルームの作成に失敗しました。もう一度お試しください。');
+        setLoading(false);
+        return;
+      }
+
+      // ローカルストレージにお名前を保存
+      localStorage.setItem('my_player_name', playerName.trim());
+
+      // ルームページへ遷移
+      router.push(`/room/${newRoomId}`);
+    } catch (err) {
+      console.error(err);
+      setError('ルームの作成中にエラーが発生しました。');
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="min-h-screen bg-slate-950 text-white font-sans flex flex-col justify-center items-center p-4 relative overflow-hidden select-none">
+      {/* 背景のグラデーション装飾 */}
+      <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-blue-500/10 rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-amber-500/10 rounded-full blur-[120px] pointer-events-none" />
+
+      <div className="max-w-md w-full z-10">
+        {/* ロゴエリア */}
+        <div className="text-center mb-8">
+          <div className="inline-block px-4 py-1.5 bg-gradient-to-r from-amber-500/20 to-blue-500/20 border border-slate-700/50 rounded-full text-xs font-semibold tracking-wider text-amber-400 mb-3 uppercase">
+            AQL 10by10by10mini Score Manager
+          </div>
+          <h1 className="text-4xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
+            AQL Score Manager
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-sm text-slate-400 mt-2">
+            リアルタイムで同期するクイズ得点管理システム
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        {/* メインカード */}
+        <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 md:p-8 shadow-2xl shadow-black/50">
+          {/* タブ切り替え */}
+          <div className="grid grid-cols-2 gap-1 p-1 bg-slate-950/80 border border-slate-800/80 rounded-2xl mb-6">
+            <button
+              onClick={() => {
+                setActiveTab('join');
+                setError('');
+              }}
+              className={`py-3 text-sm font-bold rounded-xl transition-all duration-200 ${
+                activeTab === 'join'
+                  ? 'bg-slate-800 text-amber-400 shadow-md'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              ルームに参加する
+            </button>
+            <button
+              onClick={() => {
+                setActiveTab('create');
+                setError('');
+              }}
+              className={`py-3 text-sm font-bold rounded-xl transition-all duration-200 ${
+                activeTab === 'create'
+                  ? 'bg-slate-800 text-amber-400 shadow-md'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              新規ルームを作成
+            </button>
+          </div>
+
+          {error && (
+            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-xs text-red-400 font-medium">
+              ⚠️ {error}
+            </div>
+          )}
+
+          {activeTab === 'join' ? (
+            /* ルーム参加フォーム */
+            <form onSubmit={handleJoinRoom} className="space-y-5">
+              <div>
+                <label htmlFor="join-player-name" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                  お名前（プレイヤー名）
+                </label>
+                <input
+                  id="join-player-name"
+                  type="text"
+                  placeholder="例: 山田太郎"
+                  value={playerName}
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  disabled={loading}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500/50 focus:ring-2 focus:ring-amber-500/20 rounded-2xl py-3.5 px-4 text-center text-base font-semibold text-white placeholder:text-slate-700 outline-none transition-all disabled:opacity-50"
+                  required
+                  maxLength={20}
+                  autoComplete="off"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="join-room-id" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                  ルームID
+                </label>
+                <input
+                  id="join-room-id"
+                  type="text"
+                  placeholder="例: 12345"
+                  value={roomId}
+                  onChange={(e) => setRoomId(e.target.value)}
+                  disabled={loading}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500/50 focus:ring-2 focus:ring-amber-500/20 rounded-2xl py-4 px-4 text-center text-xl font-bold tracking-widest text-amber-400 placeholder:text-slate-700 outline-none transition-all disabled:opacity-50 text-white"
+                  required
+                  maxLength={10}
+                  autoComplete="off"
+                />
+              </div>
+
+              
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 active:scale-[0.98] text-slate-950 font-bold rounded-2xl transition-all duration-200 shadow-lg shadow-amber-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <div className="h-5 w-5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                    接続中...
+                  </>
+                ) : (
+                  '観戦・プレイ画面へ進む'
+                )}
+              </button>
+            </form>
+          ) : (
+            /* 新規ルーム作成フォーム */
+            <form onSubmit={handleCreateRoom} className="space-y-5">
+              <div>
+                <label htmlFor="create-player-name" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                  お名前（プレイヤー名）
+                </label>
+                <input
+                  id="create-player-name"
+                  type="text"
+                  placeholder="例: 司会者・プレイヤー名"
+                  value={playerName}
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  disabled={loading}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500/50 focus:ring-2 focus:ring-amber-500/20 rounded-2xl py-4 px-4 text-center text-base font-semibold text-white placeholder:text-slate-700 outline-none transition-all disabled:opacity-50"
+                  required
+                  maxLength={20}
+                  autoComplete="off"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 active:scale-[0.98] text-white font-bold rounded-2xl transition-all duration-200 shadow-lg shadow-blue-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <div className="h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    作成中...
+                  </>
+                ) : (
+                  'ルームを作成して入室'
+                )}
+              </button>
+            </form>
+          )}
         </div>
-      </main>
-    </div>
+
+        {/* コピーライト/フッター情報 */}
+        <div className="text-center mt-8 text-xs text-slate-500">
+          AQL 10by10by10mini Rules &copy; {new Date().getFullYear()}
+        </div>
+      </div>
+    </main>
   );
 }
