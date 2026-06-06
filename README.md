@@ -1,36 +1,67 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🏆 AQL 10by10by10mini Score Manager
 
-## Getting Started
+AQL（アキュート・クイズ・リーグ）のルール「10by10by10mini」に特化した、複数端末でリアルタイム同期ができるクイズ得点管理Webアプリケーションです。
 
-First, run the development server:
+---
 
+## ✨ 主な機能
+
+- **双方向リアルタイム同期**:
+  - 司会者が操作したスコアや問題番号が、観戦者やプレイヤーの画面へ瞬時に反映されます。
+- **自分だけのUNDO（巻き戻し）**:
+  - 「自分が最後に行ったゲーム進行操作（正解・誤答・スルーなど）」のみを個別に1手取り消すことができます。他の人の操作を巻き戻してしまう事故を防ぎます。
+- **プレイヤー管理機能**:
+  - 解答枠（スロット）への着席・離席、および司会者によるメンバーの整理（離席✕ボタン）が可能です。
+  - ルームURLを共有されたメンバーが直接入室する際、お名前が未登録であれば自動的に名前入力モーダルが立ち上がります。
+- **放置部屋の自動消滅（ライフサイクル管理）**:
+  - 誰も操作しなくなってから24時間経過した部屋は、データベース（Supabase）側で自動的に削除されます。
+- **モバイル対応**:
+  - スマートフォンやタブレットからでも快適に操作・閲覧できるレスポンシブデザイン。
+
+---
+
+## 🛠️ 技術スタック
+
+* **フロントエンド**: Next.js (App Router), React, TypeScript, Tailwind CSS
+* **バックエンド / データベース**: Supabase (PostgreSQL, Realtime / WebSocket同期)
+* **ホスティング**: Vercel
+
+---
+
+## 🚀 ローカル開発環境の構築
+
+### 1. リポジトリのクローンと依存パッケージのインストール
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 2. 環境変数の設定
+プロジェクトのルートディレクトリに `.env.local` ファイルを作成し、ご自身のSupabaseのキーを設定してください。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```ini
+NEXT_PUBLIC_SUPABASE_URL=https://あなたのプロジェクトID.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=あなたのアノンキー
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 3. 開発サーバーの起動
+```bash
+# ローカルのみでテストする場合
+npm run dev
 
-## Learn More
+# スマホなど他の端末からも同一Wi-Fi経由でテストする場合
+npm run dev -- -H 0.0.0.0
+```
+起動後、ブラウザで [http://localhost:3000](http://localhost:3000) にアクセスします。
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 📦 本番デプロイ
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Vercel へのデプロイ
+1. このコードをご自身の GitHub リポジトリにプッシュします。
+2. Vercelダッシュボードから該当リポジトリをインポートします。
+3. プロジェクト設定の **「Environment Variables」** に、上記の `.env.local` と同じ2つの環境変数を設定してデプロイを実行します。
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Supabase（データベース）側の推奨設定
+データベースの肥大化を防ぐための自動クリーンアップSQL設定は、[supabase_cleanup_guide.md](./deploy_guide.md) （またはプロジェクト内のドキュメント）をご参照の上、SupabaseのSQL Editorにて実行してください。
+また、Supabaseの **Database ＞ Replication** から `rooms` テーブルの **RealtimeトグルがON** になっていることを必ず確認してください。
