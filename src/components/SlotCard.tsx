@@ -50,11 +50,11 @@ export default function SlotCard({
 
   const canDrag = isModerator && !isTouchDevice;
 
-  // ローカルストレージのお名前を取得
+  // セッションストレージから自分のお名前を取得
   const [myPlayerName, setMyPlayerName] = useState('');
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setMyPlayerName(localStorage.getItem('my_player_name') || '');
+      setMyPlayerName(sessionStorage.getItem('my_player_name') || '');
     }
   }, []);
 
@@ -123,7 +123,7 @@ export default function SlotCard({
           
           if (isModerator) {
             return (
-              <div key={idx} className="slot-card__player-row">
+              <div key={idx} className="slot-card__player-row flex items-center gap-1.5 w-full">
                 <input
                   type="text"
                   value={pName}
@@ -131,8 +131,18 @@ export default function SlotCard({
                     onSetPlayer(teamId, slot.slotNumber, e.target.value, idx)
                   }
                   placeholder={`選手 ${idx + 1}`}
-                  className="slot-card__player-input"
+                  className="slot-card__player-input flex-1 min-w-0"
                 />
+                {pName && (
+                  <button
+                    type="button"
+                    onClick={() => onSetPlayer(teamId, slot.slotNumber, '', idx)}
+                    className="p-1 text-slate-500 hover:text-red-400 active:scale-95 transition-all text-sm font-extrabold cursor-pointer"
+                    title="この選手を離席させる"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             );
           }

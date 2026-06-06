@@ -93,3 +93,17 @@ export type GameAction =
   | { type: 'SET_STATE'; state: GameState }
   | { type: 'SET_MODERATOR'; name: string | null }
   | { type: 'THROUGH' };
+
+/** ログに記録されるアクション（誰が・いつ・何のアクションを実行したか） */
+export type LoggedAction = {
+  id: string;          // アクションを一意に特定する UUID
+  clientId: string;    // 操作したクライアントのID
+  timestamp: number;   // アクションが実行された時刻
+  action: GameAction;  // 実際のアクション内容
+};
+
+/** DBの rooms テーブルの state カラムに保存されるオブジェクト構造 */
+export type DbRoomState = {
+  currentState: GameState;
+  actions: LoggedAction[];
+};

@@ -5,16 +5,42 @@
 'use client';
 
 import { useReducer, useCallback, useEffect, useState, useRef } from 'react';
-import { GameState, GameAction, TeamId, SlotNumber, GameConfig } from '../lib/types';
+import { GameState, GameAction, TeamId, SlotNumber, GameConfig, LoggedAction, DbRoomState } from '../lib/types';
 import { gameReducer } from '../lib/gameReducer';
 import { createInitialGameState, isReach } from '../lib/gameLogic';
 import { DEFAULT_CONFIG } from '../lib/constants';
 import { supabase } from '../lib/supabase';
+import { replayActions } from '../lib/replay';
 
 export function useGameState(roomId: string) {
   const [state, dispatch] = useReducer(gameReducer, DEFAULT_CONFIG, createInitialGameState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // クライアント(端末)識別用のID
+  const [clientId, setClientId] = useState<string>('');
+  // アクションログの保持
+  const [actions, setActions] = useState<LoggedAction[]>([]);
+
+  // クライアントIDを確実に取得するヘルパー
+  const getOrCreateClientId = useCallback(() => {
+    if (typeof window === 'undefined') return '';
+    let id = sessionStorage.getItem('aql_client_id');
+    if (!id) {
+      id = typeof crypto !== 'undefined' && crypto.randomUUID 
+        ? crypto.randomUUID() 
+        : Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+      sessionStorage.setItem('aql_client_id', id);
+    }
+    return id;
+  }, []);
+
+  // クライアントIDの初期化
+  useEffect(() => {
+    const id = getOrCreateClientId();
+    setClientId(id);
+    console.log('[AQL Debug] Client ID initialized:', id);
+  }, [getOrCreateClientId]);
   
   // DBから最新の状態を取得し、リアルタイム購読をセットアップする
   useEffect(() => {
@@ -40,7 +66,15 @@ export function useGameState(roomId: string) {
         }
 
         if (active) {
-          dispatch({ type: 'SET_STATE', state: data.state as GameState });
+          const dbState = data.state as any;
+          if (dbState && 'currentState' in dbState && 'actions' in dbState) {
+            dispatch({ type: 'SET_STATE', state: dbState.currentState as GameState });
+            setActions(dbState.actions as LoggedAction[]);
+          } else if (dbState) {
+            // 下位互換性：古い形式のデータ
+            dispatch({ type: 'SET_STATE', state: dbState as GameState });
+            setActions([]);
+          }
           setError(null);
           setLoading(false);
         }
@@ -70,7 +104,14 @@ export function useGameState(roomId: string) {
           if (!active) return;
 
           if (payload.new && payload.new.state) {
-            dispatch({ type: 'SET_STATE', state: payload.new.state as GameState });
+            const dbState = payload.new.state as any;
+            if (dbState && 'currentState' in dbState && 'actions' in dbState) {
+              dispatch({ type: 'SET_STATE', state: dbState.currentState as GameState });
+              setActions(dbState.actions as LoggedAction[]);
+            } else {
+              dispatch({ type: 'SET_STATE', state: dbState as GameState });
+              setActions([]);
+            }
           }
         }
       )
@@ -83,7 +124,7 @@ export function useGameState(roomId: string) {
   }, [roomId]);
 
   // 状態変更をDBに保存する共通関数
-  const updateDbState = useCallback(async (nextState: GameState) => {
+  const updateDbState = useCallback(async (nextState: GameState, nextActions: LoggedAction[]) => {
     if (!roomId) return;
     
     try {
@@ -93,9 +134,14 @@ export function useGameState(roomId: string) {
         history: nextState.history.map(h => ({ ...h, history: [] })), // 履歴のネストを浅くしてシリアライズエラーを防止
       };
 
+      const dbStateToSave: DbRoomState = {
+        currentState: stateToSave,
+        actions: nextActions,
+      };
+
       const { error: updateError } = await supabase
         .from('rooms')
-        .update({ state: stateToSave })
+        .update({ state: dbStateToSave })
         .eq('id', roomId);
 
       if (updateError) {
@@ -108,13 +154,39 @@ export function useGameState(roomId: string) {
 
   // ローカルdispatchとDB同期を同時に行う
   const dispatchAndSync = useCallback((action: GameAction) => {
-    // 1. 次の状態を算出
+    if (action.type === 'UNDO') {
+      return;
+    }
+    if (action.type === 'SET_STATE') {
+      dispatch(action);
+      return;
+    }
+
+    const currentClientId = getOrCreateClientId();
+    console.log('[AQL Debug] Dispatching action:', action.type, 'by client:', currentClientId);
+
+    // 1. 新しい LoggedAction を作成
+    const newLoggedAction: LoggedAction = {
+      id: typeof crypto !== 'undefined' && crypto.randomUUID 
+        ? crypto.randomUUID() 
+        : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
+      clientId: currentClientId,
+      timestamp: Date.now(),
+      action: action
+    };
+
+    const nextActions = [...actions, newLoggedAction];
+    
+    // 2. 次の状態を算出
     const nextState = gameReducer(state, action);
-    // 2. ローカルに反映（即時反映でレスポンスを良くする）
+    
+    // 3. ローカル状態を更新
     dispatch(action);
-    // 3. DBに非同期で保存
-    updateDbState(nextState);
-  }, [state, updateDbState]);
+    setActions(nextActions);
+    
+    // 4. DBに非同期で保存
+    updateDbState(nextState, nextActions);
+  }, [state, actions, getOrCreateClientId, updateDbState]);
 
   // 司会者になる・離席する
   const becomeModerator = useCallback((name: string | null) => {
@@ -131,10 +203,50 @@ export function useGameState(roomId: string) {
     dispatchAndSync({ type: 'WRONG', team, slotNumber });
   }, [dispatchAndSync]);
 
-  /** 1手戻す */
-  const handleUndo = useCallback(() => {
-    dispatchAndSync({ type: 'UNDO' });
-  }, [dispatchAndSync]);
+  /** 1手戻す（自分がした最後の操作を取り消す） */
+  const handleUndo = useCallback(async () => {
+    const currentClientId = getOrCreateClientId();
+    if (!currentClientId) {
+      console.warn('[AQL Debug] No client ID found during undo');
+      return;
+    }
+
+    console.log('[AQL Debug] Undo triggered by client:', currentClientId, 'current action count:', actions.length);
+
+    // UNDO対象となるゲーム進行系アクションのリスト
+    const undoableTypes = ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'];
+
+    // 自分の最新のゲーム進行系アクションを探す（後ろから探索）
+    let lastMyActionIndex = -1;
+    for (let i = actions.length - 1; i >= 0; i--) {
+      if (actions[i].clientId === currentClientId && undoableTypes.includes(actions[i].action.type)) {
+        lastMyActionIndex = i;
+        break;
+      }
+    }
+
+    if (lastMyActionIndex === -1) {
+      console.log('[AQL Debug] No actions to undo for this client:', currentClientId);
+      return;
+    }
+
+    const targetAction = actions[lastMyActionIndex];
+    console.log('[AQL Debug] Removing action at index:', lastMyActionIndex, 'Action details:', targetAction);
+
+    // そのアクションを除外した新しいアクション配列を作成
+    const nextActions = actions.filter((_, idx) => idx !== lastMyActionIndex);
+
+    // 最初からリプレイして、新しいゲーム状態を算出
+    const nextState = replayActions(nextActions);
+
+    // ローカル状態に反映
+    dispatch({ type: 'SET_STATE', state: nextState });
+    setActions(nextActions);
+
+    // DBに保存
+    await updateDbState(nextState, nextActions);
+    console.log('[AQL Debug] Undo complete. New action count:', nextActions.length);
+  }, [getOrCreateClientId, actions, updateDbState]);
 
   /** スルー処理 */
   const handleThrough = useCallback(() => {
@@ -212,8 +324,11 @@ export function useGameState(roomId: string) {
     [dispatchAndSync]
   );
 
-  /** Undo可能か */
-  const canUndo = state.history.length > 0;
+  /** Undo可能か (自分がしたゲーム進行操作が存在するか) */
+  const canUndo = actions.some(a => 
+    a.clientId === clientId && 
+    ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'].includes(a.action.type)
+  );
 
   return {
     state,

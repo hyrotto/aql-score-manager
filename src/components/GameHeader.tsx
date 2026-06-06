@@ -61,11 +61,6 @@ export default function GameHeader({
         {status !== 'playing' && (
           <h1 className="game-header__title">10by10by10<span className="game-header__title-mini">mini</span></h1>
         )}
-        {roomId && (
-          <span className="game-header__room-badge">
-            ROOM: {roomId}
-          </span>
-        )}
         <span className={`game-header__status ${statusColors[status]}`}>
           {statusLabels[status]}
         </span>

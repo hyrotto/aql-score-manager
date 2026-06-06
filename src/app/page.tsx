@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { createInitialGameState } from '@/lib/gameLogic';
+import { PLACEHOLDER_NAMES } from '@/lib/constants';
 
 // ランダムなルームIDの生成（数字5桁）
 const generateRoomId = () => {
@@ -22,9 +23,24 @@ export default function Home() {
   // 入力フォームの状態
   const [roomId, setRoomId] = useState('');
   const [playerName, setPlayerName] = useState('');
+  const [placeholderName, setPlaceholderName] = useState('史上最強の漁師');
+  const [isMounted, setIsMounted] = useState(false);
   
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // マウント時にランダムなプレースホルダー名を選択（ハイドレーションエラー防止）
+  useEffect(() => {
+    setIsMounted(true);
+    const randomIndex = Math.floor(Math.random() * PLACEHOLDER_NAMES.length);
+    setPlaceholderName(PLACEHOLDER_NAMES[randomIndex]);
+
+    // 前回入力した名前があれば自動入力する
+    const savedName = sessionStorage.getItem('my_player_name');
+    if (savedName) {
+      setPlayerName(savedName);
+    }
+  }, []);
 
   // ルームへの参加処理
   const handleJoinRoom = async (e: React.FormEvent) => {
@@ -53,8 +69,8 @@ export default function Home() {
         return;
       }
 
-      // ローカルストレージにお名前を保存
-      localStorage.setItem('my_player_name', playerName.trim());
+      // セッションストレージにお名前を保存
+      sessionStorage.setItem('my_player_name', playerName.trim());
 
       // ルームページへ遷移
       router.push(`/room/${upperRoomId}`);
@@ -101,8 +117,8 @@ export default function Home() {
         return;
       }
 
-      // ローカルストレージにお名前を保存
-      localStorage.setItem('my_player_name', playerName.trim());
+      // セッションストレージにお名前を保存
+      sessionStorage.setItem('my_player_name', playerName.trim());
 
       // ルームページへ遷移
       router.push(`/room/${newRoomId}`);
@@ -181,7 +197,7 @@ export default function Home() {
                 <input
                   id="join-player-name"
                   type="text"
-                  placeholder="例: 山田太郎"
+                  placeholder={isMounted ? `例: ${placeholderName}` : "例: 史上最強の漁師"}
                   value={playerName}
                   onChange={(e) => setPlayerName(e.target.value)}
                   disabled={loading}
@@ -237,7 +253,7 @@ export default function Home() {
                 <input
                   id="create-player-name"
                   type="text"
-                  placeholder="例: 司会者・プレイヤー名"
+                  placeholder={isMounted ? `例: ${placeholderName}` : "例: 史上最強の漁師"}
                   value={playerName}
                   onChange={(e) => setPlayerName(e.target.value)}
                   disabled={loading}
