@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { GameResult } from '../lib/types';
+import { Trophy } from 'lucide-react';
 
 type GameOverModalProps = {
   result: GameResult;
@@ -29,7 +30,10 @@ export default function GameOverModal({ result, onReset, onClose }: GameOverModa
         </button>
 
         <div className="modal__header">
-          <h2 className="modal__title">🏆 試合終了</h2>
+          <h2 className="modal__title" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem', justifyContent: 'center', width: '100%' }}>
+            <Trophy className="h-6 w-6 text-amber-400" />
+            <span>試合終了</span>
+          </h2>
         </div>
 
         <div className="modal__body">
