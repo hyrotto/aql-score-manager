@@ -203,7 +203,7 @@ export function useGameState(roomId: string) {
     dispatchAndSync({ type: 'WRONG', team, slotNumber });
   }, [dispatchAndSync]);
 
-  /** 1手戻す（自分がした最後の操作を取り消す） */
+  /** 1手戻す（自分がした最後の操作を取り消す。司会者の場合は他人の操作も戻せる） */
   const handleUndo = useCallback(async () => {
     const currentClientId = getOrCreateClientId();
     if (!currentClientId) {
@@ -211,30 +211,34 @@ export function useGameState(roomId: string) {
       return;
     }
 
-    console.log('[AQL Debug] Undo triggered by client:', currentClientId, 'current action count:', actions.length);
+    const isModerator = state && state.moderatorName !== null && typeof window !== 'undefined' && state.moderatorName === sessionStorage.getItem('my_player_name');
+
+    console.log('[AQL Debug] Undo triggered. client:', currentClientId, 'isModerator:', isModerator, 'current action count:', actions.length);
 
     // UNDO対象となるゲーム進行系アクションのリスト
     const undoableTypes = ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'];
 
-    // 自分の最新のゲーム進行系アクションを探す（後ろから探索）
-    let lastMyActionIndex = -1;
+    // 削除対象となる最新 of 進行系アクションを探す（後ろから探索）
+    let targetActionIndex = -1;
     for (let i = actions.length - 1; i >= 0; i--) {
-      if (actions[i].clientId === currentClientId && undoableTypes.includes(actions[i].action.type)) {
-        lastMyActionIndex = i;
+      const isUndoable = undoableTypes.includes(actions[i].action.type);
+      const isMatchUser = isModerator || actions[i].clientId === currentClientId;
+      if (isUndoable && isMatchUser) {
+        targetActionIndex = i;
         break;
       }
     }
 
-    if (lastMyActionIndex === -1) {
-      console.log('[AQL Debug] No actions to undo for this client:', currentClientId);
+    if (targetActionIndex === -1) {
+      console.log('[AQL Debug] No actions to undo');
       return;
     }
 
-    const targetAction = actions[lastMyActionIndex];
-    console.log('[AQL Debug] Removing action at index:', lastMyActionIndex, 'Action details:', targetAction);
+    const targetAction = actions[targetActionIndex];
+    console.log('[AQL Debug] Removing action at index:', targetActionIndex, 'Action details:', targetAction);
 
     // そのアクションを除外した新しいアクション配列を作成
-    const nextActions = actions.filter((_, idx) => idx !== lastMyActionIndex);
+    const nextActions = actions.filter((_, idx) => idx !== targetActionIndex);
 
     // 最初からリプレイして、新しいゲーム状態を算出
     const nextState = replayActions(nextActions);
@@ -246,7 +250,7 @@ export function useGameState(roomId: string) {
     // DBに保存
     await updateDbState(nextState, nextActions);
     console.log('[AQL Debug] Undo complete. New action count:', nextActions.length);
-  }, [getOrCreateClientId, actions, updateDbState]);
+  }, [getOrCreateClientId, actions, updateDbState, state]);
 
   /** スルー処理 */
   const handleThrough = useCallback(() => {
@@ -324,10 +328,14 @@ export function useGameState(roomId: string) {
     [dispatchAndSync]
   );
 
-  /** Undo可能か (自分がしたゲーム進行操作が存在するか) */
+  // 自分が司会者かどうかの判定
+  const isModerator = state && state.moderatorName !== null && typeof window !== 'undefined' && state.moderatorName === sessionStorage.getItem('my_player_name');
+  const undoableTypes = ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'];
+
+  /** Undo可能か (自分がしたゲーム進行操作が存在するか。司会者の場合は他人の操作も含めて存在するか) */
   const canUndo = actions.some(a => 
-    a.clientId === clientId && 
-    ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'].includes(a.action.type)
+    undoableTypes.includes(a.action.type) &&
+    (isModerator || a.clientId === clientId)
   );
 
   return {
