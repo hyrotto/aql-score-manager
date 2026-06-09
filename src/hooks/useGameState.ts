@@ -165,17 +165,33 @@ export function useGameState(roomId: string) {
     const currentClientId = getOrCreateClientId();
     console.log('[AQL Debug] Dispatching action:', action.type, 'by client:', currentClientId);
 
-    // 1. 新しい LoggedAction を作成
-    const newLoggedAction: LoggedAction = {
-      id: typeof crypto !== 'undefined' && crypto.randomUUID 
-        ? crypto.randomUUID() 
-        : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
-      clientId: currentClientId,
-      timestamp: Date.now(),
-      action: action
-    };
-
-    const nextActions = [...actions, newLoggedAction];
+    // 1. 新しい LoggedAction を作成（RESET_GAME の時は履歴をクリア）
+    let nextActions: LoggedAction[];
+    if (action.type === 'RESET_GAME') {
+      if (state.moderatorName) {
+        const initialModeratorAction: LoggedAction = {
+          id: typeof crypto !== 'undefined' && crypto.randomUUID 
+            ? crypto.randomUUID() 
+            : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
+          clientId: currentClientId,
+          timestamp: Date.now(),
+          action: { type: 'SET_MODERATOR', name: state.moderatorName }
+        };
+        nextActions = [initialModeratorAction];
+      } else {
+        nextActions = [];
+      }
+    } else {
+      const newLoggedAction: LoggedAction = {
+        id: typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
+        clientId: currentClientId,
+        timestamp: Date.now(),
+        action: action
+      };
+      nextActions = [...actions, newLoggedAction];
+    }
     
     // 2. 次の状態を算出
     const nextState = gameReducer(state, action);
