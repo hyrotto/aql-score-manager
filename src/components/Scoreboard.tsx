@@ -5,6 +5,7 @@ import { GameState, TeamId, SlotNumber, GameConfig } from '../lib/types';
 import TeamPanel from './TeamPanel';
 import GameHeader from './GameHeader';
 import GameOverModal from './GameOverModal';
+import { Settings } from 'lucide-react';
 
 type ScoreboardProps = {
   state: GameState;
@@ -138,7 +139,10 @@ export default function Scoreboard({
       {/* 設定パネル（待機中のみ表示） */}
       {state.status === 'waiting' && isModerator && (
         <div className="config-panel">
-          <h3 className="config-panel__title">⚙️ 試合設定</h3>
+          <h3 className="config-panel__title" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
+            <Settings className="h-5 w-5" />
+            <span>試合設定</span>
+          </h3>
           <div className="config-panel__grid">
             <label className="config-panel__item">
               <span className="config-panel__label">勝利スコア</span>

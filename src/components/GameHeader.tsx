@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { GameStatus } from '../lib/types';
+import { LogOut, Trophy } from 'lucide-react';
 
 type GameHeaderProps = {
   status: GameStatus;
@@ -55,8 +56,9 @@ export default function GameHeader({
   return (
     <header className="game-header">
       <div className="game-header__left">
-        <a href="/" className="btn btn--leave-room" title="トップページに戻る">
-          ◀ 退席
+        <a href="/" className="btn btn--leave-room" title="トップページに戻る" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
+          <LogOut className="h-4 w-4" />
+          <span className="hidden sm:inline">退席</span>
         </a>
         {status !== 'playing' && (
           <h1 className="game-header__title">10by10by10<span className="game-header__title-mini">mini</span></h1>
@@ -152,8 +154,9 @@ export default function GameHeader({
             )}
 
             {status === 'finished' && onShowResults && (
-              <button className="btn btn--toggle btn--active" onClick={onShowResults}>
-                🏆 結果を表示
+              <button className="btn btn--toggle btn--active" onClick={onShowResults} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
+                <Trophy className="h-4 w-4" />
+                <span>結果を表示</span>
               </button>
             )}
 
