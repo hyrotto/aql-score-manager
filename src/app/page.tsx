@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { createInitialGameState } from '@/lib/gameLogic';
 import { PLACEHOLDER_NAMES } from '@/lib/constants';
+import { LoggedAction, DbRoomState } from '@/lib/types';
 
 // ランダムなルームIDの生成（数字5桁）
 const generateRoomId = () => {
@@ -104,10 +105,35 @@ export default function Home() {
       });
       initialState.moderatorName = playerName.trim();
 
+      // client_idを取得または生成
+      let clientId = sessionStorage.getItem('aql_client_id');
+      if (!clientId) {
+        clientId = typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+        sessionStorage.setItem('aql_client_id', clientId);
+      }
+
+      // 最初の LoggedAction として SET_MODERATOR アクションを作成
+      const initialAction: LoggedAction = {
+        id: typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
+        clientId: clientId,
+        timestamp: Date.now(),
+        action: { type: 'SET_MODERATOR', name: playerName.trim() }
+      };
+
+      // state の型を DbRoomState 形式にしてインサート
+      const dbState: DbRoomState = {
+        currentState: initialState,
+        actions: [initialAction]
+      };
+
       const { error: insertError } = await supabase.from('rooms').insert({
         id: newRoomId,
         password_hash: '', // 空文字でインサート
-        state: initialState,
+        state: dbState,
       });
 
       if (insertError) {
