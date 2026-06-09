@@ -58,10 +58,10 @@ export default function GameHeader({
       <div className="game-header__left">
         <a href="/" className="btn btn--leave-room" title="トップページに戻る" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
           <LogOut className="h-4 w-4" />
-          <span className="hidden sm:inline">退席</span>
+          <span className="responsive-hide-text">退席</span>
         </a>
         {status !== 'playing' && (
-          <h1 className="game-header__title">10by10by10<span className="game-header__title-mini">mini</span></h1>
+          <h1 className="game-header__title responsive-hide-title">10by10by10<span className="game-header__title-mini">mini</span></h1>
         )}
         <span className={`game-header__status ${statusColors[status]}`}>
           {statusLabels[status]}
