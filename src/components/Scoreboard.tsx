@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GameState, TeamId, SlotNumber, GameConfig } from '../lib/types';
 import TeamPanel from './TeamPanel';
 import GameHeader from './GameHeader';
@@ -69,6 +69,27 @@ export default function Scoreboard({
       setShowModal(false);
     }
   }, [state.status]);
+
+  // 勝利スコア・限定問題数の入力欄はローカルの文字列stateで編集中の値を保持する。
+  // グローバルstateに直接bindすると、入力途中（空文字列やparseIntがNaNになる状態）で
+  // 即座にデフォルト値へフォールバックしてしまい、キーボード入力が一瞬で巻き戻って見える問題があった。
+  const [winningScoreInput, setWinningScoreInput] = useState(String(state.config.winningScore));
+  const [maxQuestionsInput, setMaxQuestionsInput] = useState(String(state.config.maxQuestions));
+  const isWinningScoreFocused = useRef(false);
+  const isMaxQuestionsFocused = useRef(false);
+
+  // 他クライアントからの同期など、フォーカスしていない時だけ外部stateの変更を反映する
+  useEffect(() => {
+    if (!isWinningScoreFocused.current) {
+      setWinningScoreInput(String(state.config.winningScore));
+    }
+  }, [state.config.winningScore]);
+
+  useEffect(() => {
+    if (!isMaxQuestionsFocused.current) {
+      setMaxQuestionsInput(String(state.config.maxQuestions));
+    }
+  }, [state.config.maxQuestions]);
 
   // セッションストレージから自分のお名前を取得
   const [myPlayerName, setMyPlayerName] = useState('');
@@ -149,10 +170,20 @@ export default function Scoreboard({
               <input
                 type="number"
                 min="1"
-                value={state.config.winningScore}
-                onChange={(e) =>
-                  onUpdateConfig({ winningScore: parseInt(e.target.value) || 200 })
-                }
+                value={winningScoreInput}
+                onFocus={() => { isWinningScoreFocused.current = true; }}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setWinningScoreInput(raw);
+                  const parsed = parseInt(raw, 10);
+                  if (!isNaN(parsed) && parsed > 0) {
+                    onUpdateConfig({ winningScore: parsed });
+                  }
+                }}
+                onBlur={() => {
+                  isWinningScoreFocused.current = false;
+                  setWinningScoreInput(String(state.config.winningScore));
+                }}
                 className="config-panel__input"
               />
             </label>
@@ -161,10 +192,20 @@ export default function Scoreboard({
               <input
                 type="number"
                 min="1"
-                value={state.config.maxQuestions}
-                onChange={(e) =>
-                  onUpdateConfig({ maxQuestions: parseInt(e.target.value) || 40 })
-                }
+                value={maxQuestionsInput}
+                onFocus={() => { isMaxQuestionsFocused.current = true; }}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setMaxQuestionsInput(raw);
+                  const parsed = parseInt(raw, 10);
+                  if (!isNaN(parsed) && parsed > 0) {
+                    onUpdateConfig({ maxQuestions: parsed });
+                  }
+                }}
+                onBlur={() => {
+                  isMaxQuestionsFocused.current = false;
+                  setMaxQuestionsInput(String(state.config.maxQuestions));
+                }}
                 className="config-panel__input"
               />
             </label>
