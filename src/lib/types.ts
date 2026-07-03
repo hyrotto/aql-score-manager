@@ -107,3 +107,10 @@ export type DbRoomState = {
   currentState: GameState;
   actions: LoggedAction[];
 };
+
+/** DBから取得した最新のルーム情報（楽観的排他制御用の revision を含む） */
+export type RoomSnapshot = {
+  state: GameState;
+  actions: LoggedAction[];
+  revision: number;
+};
