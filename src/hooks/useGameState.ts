@@ -5,7 +5,7 @@
 'use client';
 
 import { useReducer, useCallback, useEffect, useState, useRef } from 'react';
-import { GameState, GameAction, TeamId, SlotNumber, GameConfig, LoggedAction, DbRoomState } from '../lib/types';
+import { GameState, GameAction, TeamId, SlotNumber, GameConfig, LoggedAction, DbRoomState, RoomSnapshot } from '../lib/types';
 import { gameReducer } from '../lib/gameReducer';
 import { createInitialGameState, isReach } from '../lib/gameLogic';
 import { DEFAULT_CONFIG } from '../lib/constants';
@@ -21,6 +21,17 @@ export function useGameState(roomId: string) {
   const [clientId, setClientId] = useState<string>('');
   // アクションログの保持
   const [actions, setActions] = useState<LoggedAction[]>([]);
+  // 楽観的排他制御用のリビジョン番号（DBの revision 列と対応）
+  const [revision, setRevision] = useState<number>(0);
+
+  // 非同期リトライ処理中に常に最新値を参照できるようにする ref
+  // （React state はクロージャで古い値を掴む可能性があるため）
+  const stateRef = useRef(state);
+  const actionsRef = useRef(actions);
+  const revisionRef = useRef(revision);
+  useEffect(() => { stateRef.current = state; }, [state]);
+  useEffect(() => { actionsRef.current = actions; }, [actions]);
+  useEffect(() => { revisionRef.current = revision; }, [revision]);
 
   // クライアントIDを確実に取得するヘルパー
   const getOrCreateClientId = useCallback(() => {
@@ -53,7 +64,7 @@ export function useGameState(roomId: string) {
         setLoading(true);
         const { data, error: fetchError } = await supabase
           .from('rooms')
-          .select('state')
+          .select('state, revision')
           .eq('id', roomId)
           .single();
 
@@ -67,6 +78,7 @@ export function useGameState(roomId: string) {
 
         if (active) {
           const dbState = data.state as any;
+          const fetchedRevision = (data as any).revision ?? 0;
           if (dbState && 'currentState' in dbState && 'actions' in dbState) {
             dispatch({ type: 'SET_STATE', state: dbState.currentState as GameState });
             setActions(dbState.actions as LoggedAction[]);
@@ -75,6 +87,7 @@ export function useGameState(roomId: string) {
             dispatch({ type: 'SET_STATE', state: dbState as GameState });
             setActions([]);
           }
+          setRevision(fetchedRevision);
           setError(null);
           setLoading(false);
         }
@@ -105,6 +118,12 @@ export function useGameState(roomId: string) {
 
           if (payload.new && payload.new.state) {
             const dbState = payload.new.state as any;
+            const incomingRevision = (payload.new as any).revision ?? 0;
+            // 自分がまさに書き込もうとしている revision より古い通知は無視する
+            // （直後に自分の更新が届いて上書きされ、他人の操作が消えて見える事故を防ぐ）
+            if (incomingRevision < revisionRef.current) {
+              return;
+            }
             if (dbState && 'currentState' in dbState && 'actions' in dbState) {
               dispatch({ type: 'SET_STATE', state: dbState.currentState as GameState });
               setActions(dbState.actions as LoggedAction[]);
@@ -112,6 +131,7 @@ export function useGameState(roomId: string) {
               dispatch({ type: 'SET_STATE', state: dbState as GameState });
               setActions([]);
             }
+            setRevision(incomingRevision);
           }
         }
       )
@@ -123,34 +143,95 @@ export function useGameState(roomId: string) {
     };
   }, [roomId]);
 
-  // 状態変更をDBに保存する共通関数
-  const updateDbState = useCallback(async (nextState: GameState, nextActions: LoggedAction[]) => {
-    if (!roomId) return;
-    
-    try {
-      // history はサイズ削減のため、保存時にDBに送らないようにする（循環参照エラーの回避とストレージ容量節約）
-      const stateToSave = {
-        ...nextState,
-        history: nextState.history.map(h => ({ ...h, history: [] })), // 履歴のネストを浅くしてシリアライズエラーを防止
-      };
+  // DBから最新のルーム状態を取得するヘルパー（競合時の再取得に使用）
+  const fetchLatestRoom = useCallback(async (): Promise<RoomSnapshot | null> => {
+    const { data, error: fetchError } = await supabase
+      .from('rooms')
+      .select('state, revision')
+      .eq('id', roomId)
+      .single();
 
-      const dbStateToSave: DbRoomState = {
-        currentState: stateToSave,
-        actions: nextActions,
-      };
+    if (fetchError || !data) return null;
 
-      const { error: updateError } = await supabase
-        .from('rooms')
-        .update({ state: dbStateToSave })
-        .eq('id', roomId);
-
-      if (updateError) {
-        console.error('Error updating room state:', updateError);
-      }
-    } catch (err) {
-      console.error('Failed to sync state to Supabase:', err);
+    const dbState = data.state as any;
+    const latestRevision = (data as any).revision ?? 0;
+    if (dbState && 'currentState' in dbState && 'actions' in dbState) {
+      return { state: dbState.currentState as GameState, actions: dbState.actions as LoggedAction[], revision: latestRevision };
     }
+    return { state: dbState as GameState, actions: [], revision: latestRevision };
   }, [roomId]);
+
+  // 状態変更をDBに保存する共通関数（楽観的排他制御つき）
+  // computeNext: 「その時点で最新と分かっている state/actions」を受け取り、書き込むべき次の state/actions を返す関数。
+  //   競合が起きた場合はDBの最新値を渡して再計算させることで、他人の操作を上書きしてしまう事故を防ぐ。
+  const MAX_CONFLICT_RETRIES = 5;
+
+  const updateDbStateWithRetry = useCallback(async (
+    computeNext: (latestState: GameState, latestActions: LoggedAction[]) => { nextState: GameState; nextActions: LoggedAction[] } | null,
+    expectedRevision: number
+  ): Promise<void> => {
+    if (!roomId) return;
+
+    let currentRevision = expectedRevision;
+
+    for (let attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
+      const result = computeNext(stateRef.current, actionsRef.current);
+      if (!result) return; // 適用対象なし（例: undo対象がない）
+
+      const { nextState, nextActions } = result;
+
+      try {
+        const stateToSave = {
+          ...nextState,
+          history: nextState.history.map(h => ({ ...h, history: [] })),
+        };
+        const dbStateToSave: DbRoomState = {
+          currentState: stateToSave,
+          actions: nextActions,
+        };
+
+        const { data, error: updateError } = await supabase
+          .from('rooms')
+          .update({ state: dbStateToSave, revision: currentRevision + 1 })
+          .eq('id', roomId)
+          .eq('revision', currentRevision)
+          .select('revision');
+
+        if (updateError) {
+          console.error('Error updating room state:', updateError);
+          return;
+        }
+
+        if (!data || data.length === 0) {
+          // revision が一致せず更新できなかった＝他クライアントと競合した
+          if (attempt === MAX_CONFLICT_RETRIES) {
+            console.error('[AQL Debug] Conflict retry limit reached');
+            setError('他の操作と競合しました。画面を更新してください。');
+            return;
+          }
+          const latest = await fetchLatestRoom();
+          if (!latest) return;
+
+          stateRef.current = latest.state;
+          actionsRef.current = latest.actions;
+          revisionRef.current = latest.revision;
+          dispatch({ type: 'SET_STATE', state: latest.state });
+          setActions(latest.actions);
+          setRevision(latest.revision);
+          currentRevision = latest.revision;
+          continue; // 最新状態に対して同じ変更をもう一度適用してリトライ
+        }
+
+        // 成功: ローカルのrevisionも更新
+        revisionRef.current = currentRevision + 1;
+        setRevision(currentRevision + 1);
+        return;
+      } catch (err) {
+        console.error('Failed to sync state to Supabase:', err);
+        return;
+      }
+    }
+  }, [roomId, fetchLatestRoom]);
 
   // ローカルdispatchとDB同期を同時に行う
   const dispatchAndSync = useCallback((action: GameAction) => {
@@ -165,44 +246,47 @@ export function useGameState(roomId: string) {
     const currentClientId = getOrCreateClientId();
     console.log('[AQL Debug] Dispatching action:', action.type, 'by client:', currentClientId);
 
-    // 1. 新しい LoggedAction を作成（RESET_GAME の時は履歴をクリア）
-    let nextActions: LoggedAction[];
-    if (action.type === 'RESET_GAME') {
-      if (state.moderatorName) {
-        const initialModeratorAction: LoggedAction = {
-          id: typeof crypto !== 'undefined' && crypto.randomUUID 
-            ? crypto.randomUUID() 
-            : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
-          clientId: currentClientId,
-          timestamp: Date.now(),
-          action: { type: 'SET_MODERATOR', name: state.moderatorName }
-        };
-        nextActions = [initialModeratorAction];
+    const newLoggedAction: LoggedAction = {
+      id: typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
+      clientId: currentClientId,
+      timestamp: Date.now(),
+      action: action
+    };
+
+    // 「最新の state/actions」を受け取って次の状態を組み立てる関数。
+    // 競合時にはDBの最新版に対してこの関数がもう一度呼ばれるため、他人の変更を消さずに済む。
+    const computeNext = (latestState: GameState, latestActions: LoggedAction[]) => {
+      const recomputedState = gameReducer(latestState, action);
+
+      let recomputedActions: LoggedAction[];
+      if (action.type === 'RESET_GAME') {
+        if (latestState.moderatorName) {
+          recomputedActions = [{
+            id: newLoggedAction.id,
+            clientId: currentClientId,
+            timestamp: newLoggedAction.timestamp,
+            action: { type: 'SET_MODERATOR', name: latestState.moderatorName },
+          }];
+        } else {
+          recomputedActions = [];
+        }
       } else {
-        nextActions = [];
+        recomputedActions = [...latestActions, newLoggedAction];
       }
-    } else {
-      const newLoggedAction: LoggedAction = {
-        id: typeof crypto !== 'undefined' && crypto.randomUUID 
-          ? crypto.randomUUID() 
-          : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
-        clientId: currentClientId,
-        timestamp: Date.now(),
-        action: action
-      };
-      nextActions = [...actions, newLoggedAction];
-    }
-    
-    // 2. 次の状態を算出
-    const nextState = gameReducer(state, action);
-    
-    // 3. ローカル状態を更新
+
+      return { nextState: recomputedState, nextActions: recomputedActions };
+    };
+
+    // ローカル状態は即座に楽観的更新（UIの反応速度を維持）
+    const localResult = computeNext(state, actions);
     dispatch(action);
-    setActions(nextActions);
-    
-    // 4. DBに非同期で保存
-    updateDbState(nextState, nextActions);
-  }, [state, actions, getOrCreateClientId, updateDbState]);
+    setActions(localResult.nextActions);
+
+    // DBには競合検知・再試行つきで反映
+    updateDbStateWithRetry(computeNext, revisionRef.current);
+  }, [state, actions, getOrCreateClientId, updateDbStateWithRetry]);
 
   // 司会者になる・離席する
   const becomeModerator = useCallback((name: string | null) => {
@@ -227,46 +311,45 @@ export function useGameState(roomId: string) {
       return;
     }
 
-    const isModerator = state && state.moderatorName !== null && typeof window !== 'undefined' && state.moderatorName === sessionStorage.getItem('my_player_name');
-
-    console.log('[AQL Debug] Undo triggered. client:', currentClientId, 'isModerator:', isModerator, 'current action count:', actions.length);
-
     // UNDO対象となるゲーム進行系アクションのリスト
     const undoableTypes = ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'];
 
-    // 削除対象となる最新 of 進行系アクションを探す（後ろから探索）
-    let targetActionIndex = -1;
-    for (let i = actions.length - 1; i >= 0; i--) {
-      const isUndoable = undoableTypes.includes(actions[i].action.type);
-      const isMatchUser = isModerator || actions[i].clientId === currentClientId;
-      if (isUndoable && isMatchUser) {
-        targetActionIndex = i;
-        break;
+    // 「最新のactions配列」を受け取って、そこから取り消し対象を探す。
+    // 競合時にはDBの最新のactionsに対してもう一度この探索をやり直すため、
+    // 他クライアントの操作を巻き込んで消してしまう事故を防げる。
+    const computeNext = (latestState: GameState, latestActions: LoggedAction[]) => {
+      const isModeratorNow = latestState.moderatorName !== null && typeof window !== 'undefined' && latestState.moderatorName === sessionStorage.getItem('my_player_name');
+
+      let targetActionIndex = -1;
+      for (let i = latestActions.length - 1; i >= 0; i--) {
+        const isUndoable = undoableTypes.includes(latestActions[i].action.type);
+        const isMatchUser = isModeratorNow || latestActions[i].clientId === currentClientId;
+        if (isUndoable && isMatchUser) {
+          targetActionIndex = i;
+          break;
+        }
       }
-    }
 
-    if (targetActionIndex === -1) {
-      console.log('[AQL Debug] No actions to undo');
-      return;
-    }
+      if (targetActionIndex === -1) {
+        console.log('[AQL Debug] No actions to undo');
+        return null;
+      }
 
-    const targetAction = actions[targetActionIndex];
-    console.log('[AQL Debug] Removing action at index:', targetActionIndex, 'Action details:', targetAction);
+      const nextActions = latestActions.filter((_, idx) => idx !== targetActionIndex);
+      const nextState = replayActions(nextActions);
+      return { nextState, nextActions };
+    };
 
-    // そのアクションを除外した新しいアクション配列を作成
-    const nextActions = actions.filter((_, idx) => idx !== targetActionIndex);
+    // ローカルにも即座に反映（楽観的更新）
+    const localResult = computeNext(state, actions);
+    if (!localResult) return;
+    dispatch({ type: 'SET_STATE', state: localResult.nextState });
+    setActions(localResult.nextActions);
 
-    // 最初からリプレイして、新しいゲーム状態を算出
-    const nextState = replayActions(nextActions);
-
-    // ローカル状態に反映
-    dispatch({ type: 'SET_STATE', state: nextState });
-    setActions(nextActions);
-
-    // DBに保存
-    await updateDbState(nextState, nextActions);
-    console.log('[AQL Debug] Undo complete. New action count:', nextActions.length);
-  }, [getOrCreateClientId, actions, updateDbState, state]);
+    // DBには競合検知・再試行つきで反映
+    await updateDbStateWithRetry(computeNext, revisionRef.current);
+    console.log('[AQL Debug] Undo complete.');
+  }, [getOrCreateClientId, actions, updateDbStateWithRetry, state]);
 
   /** スルー処理 */
   const handleThrough = useCallback(() => {
