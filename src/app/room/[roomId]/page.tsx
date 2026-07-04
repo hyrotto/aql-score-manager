@@ -37,11 +37,11 @@ export default function RoomPage({ params }: PageProps) {
     becomeModerator,
   } = useGameState(roomId);
 
-  // セッションストレージから自分のお名前を取得、およびプレースホルダー設定
+  // ローカルストレージから自分のお名前を取得、およびプレースホルダー設定
   useEffect(() => {
     setIsMounted(true);
     if (typeof window !== 'undefined') {
-      const name = sessionStorage.getItem('my_player_name');
+      const name = localStorage.getItem('my_player_name');
       if (name) {
         setMyPlayerName(name);
       } else {
@@ -168,7 +168,7 @@ export default function RoomPage({ params }: PageProps) {
       const name = (formData.get('playerNameInput') as string || '').trim();
       if (!name) return;
 
-      sessionStorage.setItem('my_player_name', name);
+      localStorage.setItem('my_player_name', name);
       setMyPlayerName(name);
     };
 
