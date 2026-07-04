@@ -76,6 +76,17 @@ export default function RoomPage({ params }: PageProps) {
     alert('司会席から離れました。');
   };
 
+  // 他の人が司会席にいるとき、司会席をタップして司会権を奪う
+  const handleSeizeModerator = () => {
+    if (!state || !state.moderatorName) return;
+    const ok = window.confirm(
+      `現在 ${state.moderatorName} さんが司会席にいます。\n司会権を奪って、あなた（${myPlayerName}）が司会者になりますか？\n※${state.moderatorName} さんが操作中の場合はご注意ください。`
+    );
+    if (!ok) return;
+    becomeModerator(myPlayerName);
+    alert('司会権を奪いました。試合の操作が可能です。');
+  };
+
   const copyRoomLink = () => {
     if (typeof window !== 'undefined') {
       const url = `${window.location.origin}/room/${roomId}`;
@@ -261,10 +272,14 @@ export default function RoomPage({ params }: PageProps) {
               </button>
             </div>
           ) : state.moderatorName ? (
-            /* 他の人が司会者のとき */
-            <span className="text-slate-400 text-xs font-semibold bg-slate-950/50 px-3 py-1.5 rounded-lg border border-slate-800/60">
-              司会：{state.moderatorName} 
-            </span>
+            /* 他の人が司会者のとき（タップで司会権を奪える） */
+            <button
+              onClick={handleSeizeModerator}
+              title="タップして司会権を奪う"
+              className="text-slate-400 hover:text-amber-300 text-xs font-semibold bg-slate-950/50 hover:bg-slate-900/60 active:scale-95 px-3 py-1.5 rounded-lg border border-slate-800/60 hover:border-amber-500/30 transition-all"
+            >
+              司会：{state.moderatorName}
+            </button>
           ) : (
             /* 誰も司会者でないとき */
             <div className="flex items-center gap-3">
