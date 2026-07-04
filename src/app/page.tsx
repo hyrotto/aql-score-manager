@@ -36,8 +36,8 @@ export default function Home() {
     const randomIndex = Math.floor(Math.random() * PLACEHOLDER_NAMES.length);
     setPlaceholderName(PLACEHOLDER_NAMES[randomIndex]);
 
-    // 前回入力した名前があれば自動入力する
-    const savedName = sessionStorage.getItem('my_player_name');
+    // 前回入力した名前があれば自動入力する（localStorage なのでタブ・ブラウザを閉じても残る）
+    const savedName = localStorage.getItem('my_player_name');
     if (savedName) {
       setPlayerName(savedName);
     }
@@ -70,8 +70,8 @@ export default function Home() {
         return;
       }
 
-      // セッションストレージにお名前を保存
-      sessionStorage.setItem('my_player_name', playerName.trim());
+      // お名前を保存（次回アクセス時のプリセット・司会者の自動復帰に使う）
+      localStorage.setItem('my_player_name', playerName.trim());
 
       // ルームページへ遷移
       router.push(`/room/${upperRoomId}`);
@@ -126,8 +126,8 @@ export default function Home() {
         return;
       }
 
-      // セッションストレージにお名前を保存
-      sessionStorage.setItem('my_player_name', playerName.trim());
+      // お名前を保存（次回アクセス時のプリセット・司会者の自動復帰に使う）
+      localStorage.setItem('my_player_name', playerName.trim());
 
       // ルームページへ遷移
       router.push(`/room/${newRoomId}`);

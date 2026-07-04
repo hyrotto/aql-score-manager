@@ -297,7 +297,7 @@ export function useGameState(roomId: string) {
 
     const isModeratorNow = stateRef.current.moderatorName !== null
       && typeof window !== 'undefined'
-      && stateRef.current.moderatorName === sessionStorage.getItem('my_player_name');
+      && stateRef.current.moderatorName === localStorage.getItem('my_player_name');
 
     const target = findUndoTarget(actionsRef.current, currentClientId, isModeratorNow);
     if (!target) return;
@@ -393,7 +393,7 @@ export function useGameState(roomId: string) {
   );
 
   // 自分が司会者かどうかの判定
-  const isModerator = state && state.moderatorName !== null && typeof window !== 'undefined' && state.moderatorName === sessionStorage.getItem('my_player_name');
+  const isModerator = state && state.moderatorName !== null && typeof window !== 'undefined' && state.moderatorName === localStorage.getItem('my_player_name');
 
   /** Undo可能か (取り消せるアクションが存在するか) */
   const canUndo = findUndoTarget(actions, clientId, !!isModerator) !== null;

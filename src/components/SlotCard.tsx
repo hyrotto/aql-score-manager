@@ -50,11 +50,11 @@ export default function SlotCard({
 
   const canDrag = isModerator && !isTouchDevice;
 
-  // セッションストレージから自分のお名前を取得
+  // ローカルストレージから自分のお名前を取得
   const [myPlayerName, setMyPlayerName] = useState('');
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setMyPlayerName(sessionStorage.getItem('my_player_name') || '');
+      setMyPlayerName(localStorage.getItem('my_player_name') || '');
     }
   }, []);
 
