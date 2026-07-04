@@ -105,12 +105,11 @@ export default function Home() {
       });
       initialState.moderatorName = playerName.trim();
 
-      // state の型を DbRoomState 形式にしてインサート。
-      // 作成時点では操作履歴が無いため actions は空。currentState をそのまま
-      // baseState（リプレイの起点）とすることで currentState = replay(baseState, []) が成り立つ。
+      // rooms.state はスナップショット（baseState）専用。作成時点では操作履歴が無く、
+      // 以降のアクションは room_actions テーブルへ INSERT していく。
+      // currentState をそのまま baseState とすることで currentState = replay(baseState, []) が成り立つ。
       const dbState: DbRoomState = {
         currentState: initialState,
-        actions: [],
         baseState: initialState,
       };
 

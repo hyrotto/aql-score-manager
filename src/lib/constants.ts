@@ -14,14 +14,6 @@ export const DEFAULT_CONFIG: GameConfig = {
   slotCount: 5,
 };
 
-/**
- * DBに保持するアクションログの最大件数。
- * これを超えた古いアクションは baseState（スナップショット）に畳み込まれ、
- * actions 配列からは取り除かれる。これによりDBへ書き込むペイロードの肥大化を防ぐ。
- * なお、この件数より前のアクションは UNDO できなくなる（実用上は十分な手数）。
- */
-export const MAX_ACTIONS = 50;
-
 /** 各枠の初期ポイント */
 export const INITIAL_SLOT_POINTS = 1;
 
