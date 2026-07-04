@@ -1,46 +1,112 @@
 // =============================================
 // AQL 10by10by10mini ゲーム状態管理フック (Supabase リアルタイム同期版)
 // =============================================
+//
+// アクションログは room_actions テーブル（INSERT 専用）で管理する。
+// 通常の操作は 1 行 INSERT だけで済み、rooms.state の全量書き換えは発生しない。
+// currentState は常に replayActions(baseState, actions) から導出することで、
+// 楽観的更新も Realtime 受信も同じ計算経路に統一している。
 
 'use client';
 
-import { useReducer, useCallback, useEffect, useState, useRef } from 'react';
-import { GameState, GameAction, TeamId, SlotNumber, GameConfig, LoggedAction, DbRoomState, RoomSnapshot } from '../lib/types';
+import { useCallback, useEffect, useState, useRef, useMemo } from 'react';
+import { GameState, GameAction, TeamId, SlotNumber, GameConfig, LoggedAction, RoomActionRow, DbRoomState } from '../lib/types';
 import { gameReducer } from '../lib/gameReducer';
 import { createInitialGameState, isReach } from '../lib/gameLogic';
 import { DEFAULT_CONFIG } from '../lib/constants';
 import { supabase } from '../lib/supabase';
-import { replayActions } from '../lib/replay';
+import { replayActions, compareActions } from '../lib/replay';
+
+// UNDO 対象となるゲーム進行系アクションのリスト
+const UNDOABLE_TYPES = ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'];
+
+/**
+ * UUID v4 文字列を生成する。
+ * crypto.randomUUID() は secure context（HTTPS / localhost）でしか使えず、
+ * LAN の IP アドレスへ HTTP でアクセスした端末では undefined になる。
+ * その場合は secure context 不要の getRandomValues（無ければ Math.random）で
+ * UUID v4 を組み立てる。room_actions.id は uuid 型なので必ず UUID 形式にする必要がある。
+ */
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  const buf = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(buf);
+  } else {
+    for (let i = 0; i < 16; i++) buf[i] = Math.floor(Math.random() * 256);
+  }
+  buf[6] = (buf[6] & 0x0f) | 0x40; // version 4
+  buf[8] = (buf[8] & 0x3f) | 0x80; // variant 10
+  const hex = Array.from(buf, (b) => b.toString(16).padStart(2, '0'));
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10, 16).join('')}`;
+}
+
+/** room_actions テーブルの行を LoggedAction に変換する */
+function rowToLoggedAction(row: RoomActionRow): LoggedAction {
+  return {
+    id: row.id,
+    clientId: row.client_id,
+    timestamp: row.created_at ? Date.parse(row.created_at) : Date.now(),
+    action: row.action,
+    seq: row.seq,
+  };
+}
+
+/**
+ * UNDO の取り消し対象を探す。
+ * まだ tombstone されていない、undo 可能な種別の、自分（司会者なら他人も可）の
+ * 最新アクションを返す。対象が無ければ null。
+ */
+function findUndoTarget(actions: LoggedAction[], clientId: string, isModerator: boolean): LoggedAction | null {
+  const sorted = [...actions].sort(compareActions);
+
+  // 既に取り消し済み（tombstone）のアクション id を集約
+  const undoneIds = new Set<string>();
+  for (const a of sorted) {
+    if (a.action.type === 'UNDO' && a.action.targetId) undoneIds.add(a.action.targetId);
+  }
+
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const a = sorted[i];
+    if (a.action.type === 'UNDO') continue;
+    if (undoneIds.has(a.id)) continue;
+    if (!UNDOABLE_TYPES.includes(a.action.type)) continue;
+    if (!(isModerator || a.clientId === clientId)) continue;
+    return a;
+  }
+  return null;
+}
 
 export function useGameState(roomId: string) {
-  const [state, dispatch] = useReducer(gameReducer, DEFAULT_CONFIG, createInitialGameState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   // クライアント(端末)識別用のID
   const [clientId, setClientId] = useState<string>('');
-  // アクションログの保持
+  // アクションログ（room_actions 由来 + ローカルで楽観追加したもの）
   const [actions, setActions] = useState<LoggedAction[]>([]);
-  // 楽観的排他制御用のリビジョン番号（DBの revision 列と対応）
-  const [revision, setRevision] = useState<number>(0);
+  // actions の起点となるスナップショット状態（作成時・RESET 時のみ更新）
+  const [baseState, setBaseState] = useState<GameState>(() => createInitialGameState(DEFAULT_CONFIG));
 
-  // 非同期リトライ処理中に常に最新値を参照できるようにする ref
-  // （React state はクロージャで古い値を掴む可能性があるため）
+  // currentState は baseState + actions から常に導出する（楽観更新も Realtime も同じ計算経路に集約）
+  const state = useMemo(() => replayActions(baseState, actions), [baseState, actions]);
+
+  // 非同期処理中に常に最新値を参照できるようにする ref
   const stateRef = useRef(state);
   const actionsRef = useRef(actions);
-  const revisionRef = useRef(revision);
+  const baseStateRef = useRef(baseState);
   useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => { actionsRef.current = actions; }, [actions]);
-  useEffect(() => { revisionRef.current = revision; }, [revision]);
+  useEffect(() => { baseStateRef.current = baseState; }, [baseState]);
 
   // クライアントIDを確実に取得するヘルパー
   const getOrCreateClientId = useCallback(() => {
     if (typeof window === 'undefined') return '';
     let id = sessionStorage.getItem('aql_client_id');
     if (!id) {
-      id = typeof crypto !== 'undefined' && crypto.randomUUID 
-        ? crypto.randomUUID() 
-        : Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+      id = generateId();
       sessionStorage.setItem('aql_client_id', id);
     }
     return id;
@@ -50,21 +116,30 @@ export function useGameState(roomId: string) {
   useEffect(() => {
     const id = getOrCreateClientId();
     setClientId(id);
-    console.log('[AQL Debug] Client ID initialized:', id);
   }, [getOrCreateClientId]);
-  
-  // DBから最新の状態を取得し、リアルタイム購読をセットアップする
+
+  // 初期ロード + Realtime 購読
   useEffect(() => {
     if (!roomId) return;
-
     let active = true;
 
-    const fetchInitialState = async () => {
+    // room_actions を seq 昇順で取得する
+    const loadActions = async (): Promise<LoggedAction[]> => {
+      const { data, error: loadError } = await supabase
+        .from('room_actions')
+        .select('id, room_id, seq, client_id, action, created_at')
+        .eq('room_id', roomId)
+        .order('seq', { ascending: true });
+      if (loadError || !data) return [];
+      return (data as RoomActionRow[]).map(rowToLoggedAction);
+    };
+
+    const fetchInitial = async () => {
       try {
         setLoading(true);
         const { data, error: fetchError } = await supabase
           .from('rooms')
-          .select('state, revision')
+          .select('state')
           .eq('id', roomId)
           .single();
 
@@ -76,18 +151,35 @@ export function useGameState(roomId: string) {
           return;
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const dbState = data.state as any;
+
+        // baseState の決定:
+        //   - baseState あり（Step1 以降の形式）: それを起点にする
+        //   - baseState なし（Step1 以前）: 全履歴が残っているので初期状態から全リプレイすれば整合する
+        const base: GameState = (dbState && dbState.baseState)
+          ? (dbState.baseState as GameState)
+          : createInitialGameState(DEFAULT_CONFIG);
+
+        let loaded = await loadActions();
+
+        // 旧room移行: room_actions が空で rooms.state に旧 actions が残っている場合、
+        // room_actions テーブルへ移行 INSERT する（id が PK なので複数クライアント同時移行でも重複しない）。
+        if (loaded.length === 0 && dbState && Array.isArray(dbState.actions) && dbState.actions.length > 0) {
+          const legacy = dbState.actions as LoggedAction[];
+          const rows = legacy.map((la) => ({
+            id: la.id,
+            room_id: roomId,
+            client_id: la.clientId,
+            action: la.action,
+          }));
+          await supabase.from('room_actions').upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
+          loaded = await loadActions();
+        }
+
         if (active) {
-          const dbState = data.state as any;
-          const fetchedRevision = (data as any).revision ?? 0;
-          if (dbState && 'currentState' in dbState && 'actions' in dbState) {
-            dispatch({ type: 'SET_STATE', state: dbState.currentState as GameState });
-            setActions(dbState.actions as LoggedAction[]);
-          } else if (dbState) {
-            // 下位互換性：古い形式のデータ
-            dispatch({ type: 'SET_STATE', state: dbState as GameState });
-            setActions([]);
-          }
-          setRevision(fetchedRevision);
+          setBaseState(base);
+          setActions(loaded);
           setError(null);
           setLoading(false);
         }
@@ -100,38 +192,42 @@ export function useGameState(roomId: string) {
       }
     };
 
-    fetchInitialState();
+    fetchInitial();
 
-    // リアルタイム同期チャネルの作成
     const channel = supabase
       .channel(`room:${roomId}`)
+      // 他クライアント（および自分）の新規アクションを受け取る
       .on(
         'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'rooms',
-          filter: `id=eq.${roomId}`,
-        },
+        { event: 'INSERT', schema: 'public', table: 'room_actions', filter: `room_id=eq.${roomId}` },
         (payload) => {
-          if (!active) return;
-
-          if (payload.new && payload.new.state) {
-            const dbState = payload.new.state as any;
-            const incomingRevision = (payload.new as any).revision ?? 0;
-            // 自分がまさに書き込もうとしている revision より古い通知は無視する
-            // （直後に自分の更新が届いて上書きされ、他人の操作が消えて見える事故を防ぐ）
-            if (incomingRevision < revisionRef.current) {
-              return;
+          if (!active || !payload.new) return;
+          const la = rowToLoggedAction(payload.new as RoomActionRow);
+          setActions((prev) => {
+            const idx = prev.findIndex((a) => a.id === la.id);
+            if (idx >= 0) {
+              // 自分が楽観追加したアクションに、確定した seq を補完する
+              const copy = [...prev];
+              copy[idx] = { ...copy[idx], seq: la.seq };
+              return copy;
             }
-            if (dbState && 'currentState' in dbState && 'actions' in dbState) {
-              dispatch({ type: 'SET_STATE', state: dbState.currentState as GameState });
-              setActions(dbState.actions as LoggedAction[]);
-            } else {
-              dispatch({ type: 'SET_STATE', state: dbState as GameState });
-              setActions([]);
-            }
-            setRevision(incomingRevision);
+            return [...prev, la];
+          });
+        }
+      )
+      // RESET / スナップショット更新（rooms.state の書き換え）を受け取る
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
+        async (payload) => {
+          if (!active || !payload.new) return;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const dbState = (payload.new as any).state;
+          if (dbState && dbState.baseState) {
+            const reloaded = await loadActions();
+            if (!active) return;
+            setBaseState(dbState.baseState as GameState);
+            setActions(reloaded);
           }
         }
       )
@@ -143,264 +239,133 @@ export function useGameState(roomId: string) {
     };
   }, [roomId]);
 
-  // DBから最新のルーム状態を取得するヘルパー（競合時の再取得に使用）
-  const fetchLatestRoom = useCallback(async (): Promise<RoomSnapshot | null> => {
-    const { data, error: fetchError } = await supabase
-      .from('rooms')
-      .select('state, revision')
-      .eq('id', roomId)
+  // アクションを room_actions に INSERT する（seq を確定してローカルへ補完）
+  const insertAction = useCallback(async (la: LoggedAction) => {
+    if (!roomId) return;
+    const { data, error: insertError } = await supabase
+      .from('room_actions')
+      .insert({ id: la.id, room_id: roomId, client_id: la.clientId, action: la.action })
+      .select('seq')
       .single();
 
-    if (fetchError || !data) return null;
-
-    const dbState = data.state as any;
-    const latestRevision = (data as any).revision ?? 0;
-    if (dbState && 'currentState' in dbState && 'actions' in dbState) {
-      return { state: dbState.currentState as GameState, actions: dbState.actions as LoggedAction[], revision: latestRevision };
+    if (insertError) {
+      console.error('Failed to insert action:', insertError);
+      // 楽観追加をロールバック
+      setActions((prev) => prev.filter((a) => a.id !== la.id));
+      setError('操作の保存に失敗しました。通信状態をご確認ください。');
+      return;
     }
-    return { state: dbState as GameState, actions: [], revision: latestRevision };
+    if (data) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const seq = (data as any).seq as number;
+      setActions((prev) => prev.map((a) => (a.id === la.id ? { ...a, seq } : a)));
+    }
   }, [roomId]);
 
-  // 状態変更をDBに保存する共通関数（楽観的排他制御つき）
-  // computeNext: 「その時点で最新と分かっている state/actions」を受け取り、書き込むべき次の state/actions を返す関数。
-  //   競合が起きた場合はDBの最新値を渡して再計算させることで、他人の操作を上書きしてしまう事故を防ぐ。
-  const MAX_CONFLICT_RETRIES = 5;
-
-  const updateDbStateWithRetry = useCallback(async (
-    computeNext: (latestState: GameState, latestActions: LoggedAction[]) => { nextState: GameState; nextActions: LoggedAction[] } | null,
-    expectedRevision: number
-  ): Promise<void> => {
-    if (!roomId) return;
-
-    let currentRevision = expectedRevision;
-
-    for (let attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
-      const result = computeNext(stateRef.current, actionsRef.current);
-      if (!result) return; // 適用対象なし（例: undo対象がない）
-
-      const { nextState, nextActions } = result;
-
-      try {
-        const stateToSave = {
-          ...nextState,
-          history: nextState.history.map(h => ({ ...h, history: [] })),
-        };
-        const dbStateToSave: DbRoomState = {
-          currentState: stateToSave,
-          actions: nextActions,
-        };
-
-        const { data, error: updateError } = await supabase
-          .from('rooms')
-          .update({ state: dbStateToSave, revision: currentRevision + 1 })
-          .eq('id', roomId)
-          .eq('revision', currentRevision)
-          .select('revision');
-
-        if (updateError) {
-          console.error('Error updating room state:', updateError);
-          return;
-        }
-
-        if (!data || data.length === 0) {
-          // revision が一致せず更新できなかった＝他クライアントと競合した
-          if (attempt === MAX_CONFLICT_RETRIES) {
-            console.error('[AQL Debug] Conflict retry limit reached');
-            setError('他の操作と競合しました。画面を更新してください。');
-            return;
-          }
-          const latest = await fetchLatestRoom();
-          if (!latest) return;
-
-          stateRef.current = latest.state;
-          actionsRef.current = latest.actions;
-          revisionRef.current = latest.revision;
-          dispatch({ type: 'SET_STATE', state: latest.state });
-          setActions(latest.actions);
-          setRevision(latest.revision);
-          currentRevision = latest.revision;
-          continue; // 最新状態に対して同じ変更をもう一度適用してリトライ
-        }
-
-        // 成功: ローカルのrevisionも更新
-        revisionRef.current = currentRevision + 1;
-        setRevision(currentRevision + 1);
-        return;
-      } catch (err) {
-        console.error('Failed to sync state to Supabase:', err);
-        return;
-      }
-    }
-  }, [roomId, fetchLatestRoom]);
-
-  // ローカルdispatchとDB同期を同時に行う
-  const dispatchAndSync = useCallback((action: GameAction) => {
-    if (action.type === 'UNDO') {
-      return;
-    }
-    if (action.type === 'SET_STATE') {
-      dispatch(action);
-      return;
-    }
-
+  // アクションをローカルに楽観追加しつつ DB へ INSERT する共通処理
+  const appendAction = useCallback((action: GameAction) => {
     const currentClientId = getOrCreateClientId();
-    console.log('[AQL Debug] Dispatching action:', action.type, 'by client:', currentClientId);
-
-    const newLoggedAction: LoggedAction = {
-      id: typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
+    const la: LoggedAction = {
+      id: generateId(),
       clientId: currentClientId,
       timestamp: Date.now(),
-      action: action
+      action,
     };
-
-    // 「最新の state/actions」を受け取って次の状態を組み立てる関数。
-    // 競合時にはDBの最新版に対してこの関数がもう一度呼ばれるため、他人の変更を消さずに済む。
-    const computeNext = (latestState: GameState, latestActions: LoggedAction[]) => {
-      const recomputedState = gameReducer(latestState, action);
-
-      let recomputedActions: LoggedAction[];
-      if (action.type === 'RESET_GAME') {
-        if (latestState.moderatorName) {
-          recomputedActions = [{
-            id: newLoggedAction.id,
-            clientId: currentClientId,
-            timestamp: newLoggedAction.timestamp,
-            action: { type: 'SET_MODERATOR', name: latestState.moderatorName },
-          }];
-        } else {
-          recomputedActions = [];
-        }
-      } else {
-        recomputedActions = [...latestActions, newLoggedAction];
-      }
-
-      return { nextState: recomputedState, nextActions: recomputedActions };
-    };
-
-    // ローカル状態は即座に楽観的更新（UIの反応速度を維持）
-    const localResult = computeNext(state, actions);
-    dispatch(action);
-    setActions(localResult.nextActions);
-
-    // DBには競合検知・再試行つきで反映
-    updateDbStateWithRetry(computeNext, revisionRef.current);
-  }, [state, actions, getOrCreateClientId, updateDbStateWithRetry]);
+    setActions((prev) => [...prev, la]);
+    insertAction(la);
+  }, [getOrCreateClientId, insertAction]);
 
   // 司会者になる・離席する
   const becomeModerator = useCallback((name: string | null) => {
-    dispatchAndSync({ type: 'SET_MODERATOR', name });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'SET_MODERATOR', name });
+  }, [appendAction]);
 
   /** 正解処理 */
   const handleCorrect = useCallback((team: TeamId, slotNumber: SlotNumber) => {
-    dispatchAndSync({ type: 'CORRECT', team, slotNumber });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'CORRECT', team, slotNumber });
+  }, [appendAction]);
 
   /** 誤答処理 */
   const handleWrong = useCallback((team: TeamId, slotNumber: SlotNumber) => {
-    dispatchAndSync({ type: 'WRONG', team, slotNumber });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'WRONG', team, slotNumber });
+  }, [appendAction]);
 
   /** 1手戻す（自分がした最後の操作を取り消す。司会者の場合は他人の操作も戻せる） */
   const handleUndo = useCallback(async () => {
     const currentClientId = getOrCreateClientId();
-    if (!currentClientId) {
-      console.warn('[AQL Debug] No client ID found during undo');
-      return;
-    }
+    if (!currentClientId) return;
 
-    // UNDO対象となるゲーム進行系アクションのリスト
-    const undoableTypes = ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'];
+    const isModeratorNow = stateRef.current.moderatorName !== null
+      && typeof window !== 'undefined'
+      && stateRef.current.moderatorName === sessionStorage.getItem('my_player_name');
 
-    // 「最新のactions配列」を受け取って、そこから取り消し対象を探す。
-    // 競合時にはDBの最新のactionsに対してもう一度この探索をやり直すため、
-    // 他クライアントの操作を巻き込んで消してしまう事故を防げる。
-    const computeNext = (latestState: GameState, latestActions: LoggedAction[]) => {
-      const isModeratorNow = latestState.moderatorName !== null && typeof window !== 'undefined' && latestState.moderatorName === sessionStorage.getItem('my_player_name');
+    const target = findUndoTarget(actionsRef.current, currentClientId, isModeratorNow);
+    if (!target) return;
 
-      let targetActionIndex = -1;
-      for (let i = latestActions.length - 1; i >= 0; i--) {
-        const isUndoable = undoableTypes.includes(latestActions[i].action.type);
-        const isMatchUser = isModeratorNow || latestActions[i].clientId === currentClientId;
-        if (isUndoable && isMatchUser) {
-          targetActionIndex = i;
-          break;
-        }
-      }
-
-      if (targetActionIndex === -1) {
-        console.log('[AQL Debug] No actions to undo');
-        return null;
-      }
-
-      const nextActions = latestActions.filter((_, idx) => idx !== targetActionIndex);
-      const nextState = replayActions(nextActions);
-      return { nextState, nextActions };
-    };
-
-    // ローカルにも即座に反映（楽観的更新）
-    const localResult = computeNext(state, actions);
-    if (!localResult) return;
-    dispatch({ type: 'SET_STATE', state: localResult.nextState });
-    setActions(localResult.nextActions);
-
-    // DBには競合検知・再試行つきで反映
-    await updateDbStateWithRetry(computeNext, revisionRef.current);
-    console.log('[AQL Debug] Undo complete.');
-  }, [getOrCreateClientId, actions, updateDbStateWithRetry, state]);
+    // 取り消しは「対象を打ち消す UNDO アクションの追記」として表現する（room_actions は INSERT 専用）
+    appendAction({ type: 'UNDO', targetId: target.id });
+  }, [getOrCreateClientId, appendAction]);
 
   /** スルー処理 */
   const handleThrough = useCallback(() => {
-    dispatchAndSync({ type: 'THROUGH' });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'THROUGH' });
+  }, [appendAction]);
 
   /** プレイヤー設定 */
-  const setPlayer = useCallback(
-    (team: TeamId, slotNumber: SlotNumber, playerName: string, playerIndex: number) => {
-      dispatchAndSync({ type: 'SET_PLAYER', team, slotNumber, playerName, playerIndex });
-    },
-    [dispatchAndSync]
-  );
+  const setPlayer = useCallback((team: TeamId, slotNumber: SlotNumber, playerName: string, playerIndex: number) => {
+    appendAction({ type: 'SET_PLAYER', team, slotNumber, playerName, playerIndex });
+  }, [appendAction]);
 
   /** プレイヤー削除 */
-  const removePlayerFromSlot = useCallback(
-    (team: TeamId, slotNumber: SlotNumber, playerIndex: number) => {
-      dispatchAndSync({ type: 'REMOVE_PLAYER', team, slotNumber, playerIndex });
-    },
-    [dispatchAndSync]
-  );
+  const removePlayerFromSlot = useCallback((team: TeamId, slotNumber: SlotNumber, playerIndex: number) => {
+    appendAction({ type: 'REMOVE_PLAYER', team, slotNumber, playerIndex });
+  }, [appendAction]);
 
   /** ポイント直接設定（計算モード） */
   const setPoints = useCallback((team: TeamId, slotNumber: SlotNumber, points: number) => {
-    dispatchAndSync({ type: 'SET_POINTS', team, slotNumber, points });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'SET_POINTS', team, slotNumber, points });
+  }, [appendAction]);
 
   /** 問題番号設定 */
   const setQuestion = useCallback((question: number) => {
-    dispatchAndSync({ type: 'SET_QUESTION', question });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'SET_QUESTION', question });
+  }, [appendAction]);
 
   /** 問題番号の公開/非公開切り替え */
   const toggleQuestionPublic = useCallback(() => {
-    dispatchAndSync({ type: 'TOGGLE_QUESTION_PUBLIC' });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'TOGGLE_QUESTION_PUBLIC' });
+  }, [appendAction]);
 
-  /** ゲームリセット */
-  const resetGame = useCallback(() => {
-    dispatchAndSync({ type: 'RESET_GAME' });
-  }, [dispatchAndSync]);
+  /**
+   * ゲームリセット。
+   * 履歴を破棄する破壊的操作のため、room_actions を全削除し rooms.state
+   * （スナップショット）を更新する。通常操作と異なり rooms.state を書き換える。
+   */
+  const resetGame = useCallback(async () => {
+    const resetState = gameReducer(stateRef.current, { type: 'RESET_GAME' });
+    const snapshot = { ...resetState, history: [] };
+
+    // ローカル即時反映
+    setActions([]);
+    setBaseState(snapshot);
+
+    // DB: 履歴を全削除 → スナップショットを更新（他クライアントは rooms UPDATE で追従）
+    const dbStateToSave: DbRoomState = { currentState: snapshot, baseState: snapshot };
+    const { error: delError } = await supabase.from('room_actions').delete().eq('room_id', roomId);
+    if (delError) console.error('Failed to clear room_actions on reset:', delError);
+    const { error: updError } = await supabase.from('rooms').update({ state: dbStateToSave }).eq('id', roomId);
+    if (updError) console.error('Failed to update snapshot on reset:', updError);
+  }, [roomId]);
 
   /** ゲーム開始 */
   const startGame = useCallback(() => {
-    dispatchAndSync({ type: 'START_GAME' });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'START_GAME' });
+  }, [appendAction]);
 
   /** 設定更新 */
   const updateConfig = useCallback((newConfig: Partial<GameConfig>) => {
-    dispatchAndSync({ type: 'UPDATE_CONFIG', config: newConfig });
-  }, [dispatchAndSync]);
+    appendAction({ type: 'UPDATE_CONFIG', config: newConfig });
+  }, [appendAction]);
 
   /** リーチ判定のヘルパー */
   const checkReach = useCallback(
@@ -414,28 +379,24 @@ export function useGameState(roomId: string) {
   /** 枠単位での選手入れ替え */
   const swapSlots = useCallback(
     (fromTeam: TeamId, fromSlot: SlotNumber, toTeam: TeamId, toSlot: SlotNumber) => {
-      dispatchAndSync({ type: 'SWAP_SLOTS', fromTeam, fromSlot, toTeam, toSlot });
+      appendAction({ type: 'SWAP_SLOTS', fromTeam, fromSlot, toTeam, toSlot });
     },
-    [dispatchAndSync]
+    [appendAction]
   );
 
   /** 誤答数の直接設定（編集モード） */
   const setWrongCount = useCallback(
     (team: TeamId, slotNumber: SlotNumber, wrongCount: number) => {
-      dispatchAndSync({ type: 'SET_WRONG_COUNT', team, slotNumber, wrongCount });
+      appendAction({ type: 'SET_WRONG_COUNT', team, slotNumber, wrongCount });
     },
-    [dispatchAndSync]
+    [appendAction]
   );
 
   // 自分が司会者かどうかの判定
   const isModerator = state && state.moderatorName !== null && typeof window !== 'undefined' && state.moderatorName === sessionStorage.getItem('my_player_name');
-  const undoableTypes = ['CORRECT', 'WRONG', 'THROUGH', 'SET_POINTS', 'SET_WRONG_COUNT', 'SET_QUESTION'];
 
-  /** Undo可能か (自分がしたゲーム進行操作が存在するか。司会者の場合は他人の操作も含めて存在するか) */
-  const canUndo = actions.some(a => 
-    undoableTypes.includes(a.action.type) &&
-    (isModerator || a.clientId === clientId)
-  );
+  /** Undo可能か (取り消せるアクションが存在するか) */
+  const canUndo = findUndoTarget(actions, clientId, !!isModerator) !== null;
 
   return {
     state,
