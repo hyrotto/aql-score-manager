@@ -106,11 +106,19 @@ export type LoggedAction = {
 export type DbRoomState = {
   currentState: GameState;
   actions: LoggedAction[];
+  /**
+   * actions を直近 N 件に切り詰めた際、取り除いた古いアクションを畳み込んだ状態。
+   * currentState = replayActions(baseState, actions) の関係が常に成り立つ。
+   * （古いデータには存在しないため、読み込み側で初期状態にフォールバックする）
+   */
+  baseState?: GameState;
 };
 
 /** DBから取得した最新のルーム情報（楽観的排他制御用の revision を含む） */
 export type RoomSnapshot = {
   state: GameState;
   actions: LoggedAction[];
+  /** actions の起点となるスナップショット状態（切り詰めで畳み込まれた古い操作を含む） */
+  baseState: GameState;
   revision: number;
 };
