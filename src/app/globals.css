@@ -1167,6 +1167,19 @@ body  {
   background: #f43f5e !important;
 }
 
+/* 司会者用フッターのスルーボタン（横幅いっぱい・判定ボタンより低め） */
+.btn-huge--through  {
+  flex: none;
+  width: 100%;
+  height: 56px;
+  font-size: 1.25rem;
+  background: #475569 !important; /* slate-600 */
+}
+
+.btn-huge--through:hover  {
+  background: #64748b !important; /* slate-500 */
+}
+
 .btn-huge:disabled  {
   opacity: 0.3;
   cursor: not-allowed;

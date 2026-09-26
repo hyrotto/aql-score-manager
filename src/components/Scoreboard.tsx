@@ -149,7 +149,6 @@ export default function Scoreboard({
         onToggleQuestionPublic={onToggleQuestionPublic}
         onToggleEditMode={onToggleEditMode}
         onUndo={onUndo}
-        onThrough={onThrough}
         onStart={onStart}
         onReset={onReset}
         onSetQuestion={onSetQuestion}
@@ -323,12 +322,17 @@ export default function Scoreboard({
               undo（1手戻す）
             </button>
             {isModerator && (
-              <button
-                className="btn btn--toggle bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white"
-                onClick={() => setSelectedSlot(null)}
-              >
-                選択解除
-              </button>
+              <>
+                <button className="btn btn--through" onClick={onThrough}>
+                  スルー
+                </button>
+                <button
+                  className="btn btn--toggle bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white"
+                  onClick={() => setSelectedSlot(null)}
+                >
+                  選択解除
+                </button>
+              </>
             )}
           </div>
         </div>
