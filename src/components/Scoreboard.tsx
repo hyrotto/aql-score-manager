@@ -324,7 +324,7 @@ export default function Scoreboard({
             </button>
             {isModerator && (
               <button
-                className="btn btn--toggle ml-3 bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white"
+                className="btn btn--toggle bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white"
                 onClick={() => setSelectedSlot(null)}
               >
                 選択解除
