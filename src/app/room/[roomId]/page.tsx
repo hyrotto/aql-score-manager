@@ -220,8 +220,11 @@ export default function RoomPage({ params }: PageProps) {
     );
   }
 
+  // 司会者の試合中は、押しやすい画面下部にスルーボタンを常設する
+  const showThroughBar = isModerator && state.status === 'playing';
+
   return (
-    <div className="min-h-screen bg-slate-950 text-white font-sans pb-16 relative">
+    <div className={`min-h-screen bg-slate-950 text-white font-sans relative ${showThroughBar ? 'pb-36' : 'pb-16'}`}>
       <Scoreboard
         state={state}
         isModerator={isModerator}
@@ -245,7 +248,18 @@ export default function RoomPage({ params }: PageProps) {
       />
       
       {/* 画面下部のルームID表示＆コントロールフッター */}
-      <footer className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur-md border-t border-slate-800/80 py-3.5 px-4 flex items-center justify-between z-40 text-sm shadow-xl shadow-black/80">
+      <footer className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur-md border-t border-slate-800/80 py-3.5 px-4 flex flex-col gap-3 z-40 text-sm shadow-xl shadow-black/80">
+        {showThroughBar && (
+          <button
+            onClick={handleThrough}
+            title="誰も解答しなかった問題を流す（問題番号+1）"
+            className="btn-huge btn-huge--through"
+          >
+            スルー
+          </button>
+        )}
+
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-slate-400 font-semibold text-xs tracking-wider uppercase">ROOM:</span>
             <span
@@ -257,43 +271,44 @@ export default function RoomPage({ params }: PageProps) {
             </span>
           </div>
 
-        <div className="flex items-center gap-2">
-          {isModerator ? (
-            /* 自分が司会者のとき */
-            <div className="flex items-center gap-3">
-              <span className="text-emerald-400 font-bold text-xs flex items-center gap-1">
-                司会者：あなた
-              </span>
+          <div className="flex items-center gap-2">
+            {isModerator ? (
+              /* 自分が司会者のとき */
+              <div className="flex items-center gap-3">
+                <span className="text-emerald-400 font-bold text-xs flex items-center gap-1">
+                  司会者：あなた
+                </span>
+                <button
+                  onClick={handleLeaveModerator}
+                  className="py-1.5 px-3 bg-red-600/20 hover:bg-red-600/40 active:scale-95 text-red-400 font-bold text-xs rounded-lg border border-red-500/20 transition-all"
+                >
+                  離席する
+                </button>
+              </div>
+            ) : state.moderatorName ? (
+              /* 他の人が司会者のとき（タップで司会権を奪える） */
               <button
-                onClick={handleLeaveModerator}
-                className="py-1.5 px-3 bg-red-600/20 hover:bg-red-600/40 active:scale-95 text-red-400 font-bold text-xs rounded-lg border border-red-500/20 transition-all"
+                onClick={handleSeizeModerator}
+                title="タップして司会権を奪う"
+                className="text-slate-400 hover:text-amber-300 text-xs font-semibold bg-slate-950/50 hover:bg-slate-900/60 active:scale-95 px-3 py-1.5 rounded-lg border border-slate-800/60 hover:border-amber-500/30 transition-all"
               >
-                離席する
+                司会：{state.moderatorName}
               </button>
-            </div>
-          ) : state.moderatorName ? (
-            /* 他の人が司会者のとき（タップで司会権を奪える） */
-            <button
-              onClick={handleSeizeModerator}
-              title="タップして司会権を奪う"
-              className="text-slate-400 hover:text-amber-300 text-xs font-semibold bg-slate-950/50 hover:bg-slate-900/60 active:scale-95 px-3 py-1.5 rounded-lg border border-slate-800/60 hover:border-amber-500/30 transition-all"
-            >
-              司会：{state.moderatorName}
-            </button>
-          ) : (
-            /* 誰も司会者でないとき */
-            <div className="flex items-center gap-3">
-              <span className="text-slate-500 text-xs font-semibold">
-                司会者不在
-              </span>
-              <button
-                onClick={handleBecomeModerator}
-                className="py-1.5 px-3 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 font-bold text-xs rounded-lg transition-all shadow-md shadow-amber-500/10"
-              >
-                司会者になる
-              </button>
-            </div>
-          )}
+            ) : (
+              /* 誰も司会者でないとき */
+              <div className="flex items-center gap-3">
+                <span className="text-slate-500 text-xs font-semibold">
+                  司会者不在
+                </span>
+                <button
+                  onClick={handleBecomeModerator}
+                  className="py-1.5 px-3 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 font-bold text-xs rounded-lg transition-all shadow-md shadow-amber-500/10"
+                >
+                  司会者になる
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </footer>
     </div>

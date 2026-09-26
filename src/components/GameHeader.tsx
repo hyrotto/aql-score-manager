@@ -15,7 +15,6 @@ type GameHeaderProps = {
   onToggleQuestionPublic: () => void;
   onToggleEditMode: () => void;
   onUndo: () => void;
-  onThrough: () => void;
   onStart: () => void;
   onReset: () => void;
   onSetQuestion: (q: number) => void;
@@ -34,7 +33,6 @@ export default function GameHeader({
   onToggleQuestionPublic,
   onToggleEditMode,
   onUndo,
-  onThrough,
   onStart,
   onReset,
   onSetQuestion,
@@ -126,14 +124,6 @@ export default function GameHeader({
 
             {status === 'playing' && (
               <>
-                <button
-                  className="btn btn--through"
-                  onClick={onThrough}
-                  title="スルー（限定問題数+1）"
-                >
-                  スルー
-                </button>
-
                 <button
                   className={`btn btn--toggle ${isEditMode ? 'btn--active' : ''}`}
                   onClick={onToggleEditMode}
